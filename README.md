@@ -5,6 +5,9 @@
 
 A python library to generate spline basis functions. Check out examples in the [notebooks](docs/notebooks/).
 
+### Installation:
+From PyPi: `pip install spline-basis`
+
 Currently supported basis functions:
 1. $\mathrm{M}$-Splines: Non-negative spline functions which integrate to 1 over the support of the basis function.
 2. $\mathrm{I}$-Splines: Monotone spline functions defined as the integral of M-splines.
