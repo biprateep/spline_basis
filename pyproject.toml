@@ -16,7 +16,9 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "deprecated",
-    "ipykernel", # Support for Jupyter notebooks
+    "ipykernel",
+    "numpy",
+    "numba", # Support for Jupyter notebooks
 ]
 
 # On a mac, install optional dependencies with `pip install '.[dev]'` (include the single quotes)
