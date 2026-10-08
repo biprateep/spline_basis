@@ -16,11 +16,16 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "numpy",
-    "numba",
 ]
 
 # On a mac, install optional dependencies with `pip install '.[dev]'` (include the single quotes)
 [project.optional-dependencies]
+torch = [
+    "torch", # PyTorch backend: pass torch tensors to the splines
+]
+jax = [
+    "jax", # JAX backend: pass jax arrays to the splines
+]
 dev = [
     "pytest",
     "pytest-cov", # Used to report total code coverage
