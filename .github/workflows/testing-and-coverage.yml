@@ -18,9 +18,9 @@ jobs:
         python-version: ['3.8', '3.9', '3.10']
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
@@ -34,16 +34,19 @@ jobs:
       run: |
         python -m pytest tests --cov=splinebasis --cov-report=xml
     - name: Upload coverage report to codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v7
+      with:
+        # needed since codecov-action v4; add the CODECOV_TOKEN repository secret to enable uploads
+        token: ${{ secrets.CODECOV_TOKEN }}
 
   backends:
     # The PyTorch and JAX backend tests are skipped above, where neither is installed
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
     - name: Set up Python 3.12
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
         python-version: '3.12'
     - name: Install dependencies
