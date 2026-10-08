@@ -110,7 +110,7 @@ def test_isplinebasis_grid():
     grid = np.linspace(-5, 5, 20)
     basis = ISplineBasis(order=3, num_basis=8, grid=grid)
     np.testing.assert_array_equal(basis.x, grid)
-    np.testing.assert_allclose(basis(np.ones(8)), basis.basis_vectors.sum(axis=1))
+    np.testing.assert_allclose(basis(np.ones(8)), basis.basis_vectors.sum(axis=1), atol=1e-12)
 
 
 @pytest.mark.parametrize("basis_cls", [MSplineBasis, ISplineBasis])

@@ -1,7 +1,8 @@
-import numba as nb
 import numpy as np
 
-from . import _utils
+from . import _core, _utils
+from ._backend import get_backend
+from ._basis import _SplineBasis
 
 __all__ = ["Msplines", "MSplineBasis"]
 
@@ -40,7 +41,15 @@ class Msplines:
         The knot sequence, :math:`t_1, \ldots, t_{n + k}` in the notation of
         `Ramsay (1988)`_.
 
-        `Ramsay (1988)`: https://www.jstor.org/stable/2245395
+    Note
+    ----
+    `x` may be a NumPy array (or any array-like), a PyTorch tensor or a JAX
+    array, and results are returned on the same backend, dtype and device.
+    PyTorch and JAX results are differentiable with respect to `x`, and the
+    JAX evaluation works inside `jax.jit` (the range check on `x` is then
+    skipped).
+
+    .. _`Ramsay (1988)`: https://www.jstor.org/stable/2245395
     """
 
     def __init__(
@@ -71,13 +80,15 @@ class Msplines:
             If `i` is invalid, do we raise an error or return 0?
         Returns
         -------
-        np.ndarray
+        array
             The values of the M-spline evaluated at each x.
 
         """
-        x = _utils.validate_x(x, self.lower, self.upper)
-
-        return _calculate_M(x=x, i=i, k=self.order, n=self.n, knots=self.knots, invalid_i=invalid_i)
+        be = get_backend(x)
+        x = _utils.validate_x(be, x, self.lower, self.upper)
+        if not _utils.validate_member(i, self.n, invalid_i):
+            return be.zeros_like(x)
+        return self._evaluate(be, x, derivative=False)[:, i - 1]
 
     def derivatives(self, x, i, invalid_i="raise"):
         r"""Evaluate first derivative of spline :math:`M_i` at point(s) x.
@@ -92,117 +103,49 @@ class Msplines:
             If `i` is invalid, do we raise an error or return 0?
         Returns
         -------
-        np.ndarray
+        array
             The values of the first derivative of M-spline evaluated at each x.
 
         """
-        x = _utils.validate_x(x, self.lower, self.upper)
+        be = get_backend(x)
+        x = _utils.validate_x(be, x, self.lower, self.upper)
+        if not _utils.validate_member(i, self.n, invalid_i):
+            return be.zeros_like(x)
+        return self._evaluate(be, x, derivative=True)[:, i - 1]
 
-        return _calculate_dM_dx(x=x, i=i, k=self.order, n=self.n, knots=self.knots, invalid_i=invalid_i)
+    def evaluate_all(self, x):
+        r"""Evaluate all members :math:`M_1, \ldots, M_n` at point(s) x.
+        Parameters
+        ----------
+        x : 1-D array-like
+            Points at which to evaluate the splines.
+        Returns
+        -------
+        array
+            Array of shape ``(len(x), n)`` whose column `i - 1` is :math:`M_i`.
+        """
+        be = get_backend(x)
+        return self._evaluate(be, _utils.validate_x(be, x, self.lower, self.upper), derivative=False)
 
+    def derivatives_all(self, x):
+        r"""Evaluate the first derivatives of all members at point(s) x.
+        Parameters
+        ----------
+        x : 1-D array-like
+            Points at which to evaluate the derivatives.
+        Returns
+        -------
+        array
+            Array of shape ``(len(x), n)`` whose column `i - 1` is :math:`dM_i/dx`.
+        """
+        be = get_backend(x)
+        return self._evaluate(be, _utils.validate_x(be, x, self.lower, self.upper), derivative=True)
 
-@nb.jit(nopython=True)
-def _ti_le_x_lt_tiplusk(x, ti, tiplusk, last):
-    r"""Indices where :math:`t_i \le x < t_{i+k}`.
-    Parameters
-    ----------
-    x : np.ndarray
-    ti : float
-        :math:`t_i`
-    tiplusk : float
-        :math:`t_{i+k}`
-    last : float
-        Last knot. If :math:`t_{i+k}` is the last knot the interval is closed,
-        :math:`t_i \le x \le t_{i+k}`, so the splines do not vanish at the
-        upper end of the mesh.
-    Returns
-    -------
-    np.ndarray
-        Array of booleans of same length as `x` indicating
-        if `x` is in the support interval.
-    """
-    if tiplusk == last:
-        return (ti <= x) & (x <= tiplusk)
-    return (ti <= x) & (x < tiplusk)
-
-
-@nb.jit(nopython=True)
-def _calculate_M(x, i, k, n, knots, invalid_i="raise"):
-    r"""Calculate M-splines at points `x` recursively."""
-    if not (1 <= i <= n):
-        if invalid_i == "raise":
-            raise ValueError(f"invalid spline member `i` of {i}")
-        elif invalid_i == "zero":
-            return np.zeros_like(x)
-        else:
-            raise ValueError(f"invalid `invalid_i` of {invalid_i}")
-
-    tiplusk = knots[i + k - 1]
-    ti = knots[i - 1]
-    if tiplusk == ti:
-        return np.zeros_like(x)
-
-    boolindex = _ti_le_x_lt_tiplusk(x, ti, tiplusk, knots[-1])
-    if k == 1:
-        values = 1.0 / (tiplusk - ti)
-        res = np.where(boolindex, values, np.zeros_like(values))
-        return res
-    else:
-        assert k > 1
-
-        values = (
-            k
-            * (
-                (x - ti) * _calculate_M(x, i, k - 1, n, knots)
-                + (tiplusk - x) * _calculate_M(x, i + 1, k - 1, n, knots, invalid_i="zero")
-            )
-            / ((float(k) - 1) * (tiplusk - ti))
-        )
-
-        res = np.where(boolindex, values, np.zeros_like(values))
-
-        return res
+    def _evaluate(self, be, x, derivative):
+        return _core.msplines(be, x, be.constant(self.knots, like=x), self.order, derivative=derivative)
 
 
-@nb.jit(nopython=True)
-def _calculate_dM_dx(x, i, k, n, knots, invalid_i="raise"):
-    r"""Calculate the derivatives of M-splines at points `x ` recursively"""
-    if not (1 <= i <= n):
-        if invalid_i == "raise":
-            raise ValueError(f"invalid spline member `i` of {i}")
-        elif invalid_i == "zero":
-            return np.zeros_like(x)
-        else:
-            raise ValueError(f"invalid `invalid_i` of {invalid_i}")
-
-    tiplusk = knots[i + k - 1]
-    ti = knots[i - 1]
-    if tiplusk == ti or k == 1:
-        return np.zeros_like(x)
-    else:
-        assert k > 1
-        boolindex = _ti_le_x_lt_tiplusk(x, ti, tiplusk, knots[-1])
-        values = (
-            k
-            * (
-                (x - ti) * _calculate_dM_dx(x, i, k - 1, n, knots)
-                + _calculate_M(x, i, k - 1, n, knots)
-                + (tiplusk - x) * _calculate_dM_dx(x, i + 1, k - 1, n, knots, invalid_i="zero")
-                - _calculate_M(x, i + 1, k - 1, n, knots, invalid_i="zero")
-            )
-            / ((k - 1) * (tiplusk - ti))
-        )
-
-        res = np.where(
-            boolindex,
-            values,
-            np.zeros_like(x),
-        )
-
-        return res
-
-
-class MSplineBasis:
+class MSplineBasis(_SplineBasis):
     r"""Evaluate the weighted sum of an M-spline family (see `Ramsay (1988)`_).
     Parameters
     ----------
@@ -217,7 +160,11 @@ class MSplineBasis:
     n_grid: int
         Number of evenly spaced points in :attr:`MSplineBasis.x`.
     grid: 1-D array-like
-        Sets :attr:`MSplineBasis.x`.
+        Sets :attr:`MSplineBasis.x`. A PyTorch tensor or JAX array selects
+        that backend (keeping its dtype and device).
+    backend: {None, 'numpy', 'torch', 'jax'}
+        Backend for :attr:`MSplineBasis.x` and the basis arrays. Inferred from
+        `grid` if None, and NumPy if `grid` is not given.
     Attributes
     ----------
     order : int
@@ -231,64 +178,22 @@ class MSplineBasis:
         Lower end of interval spanned by the splines (first point in mesh).
     upper: float
         Upper end of interval spanned by the splines (last point in mesh).
-    x: np.ndarray
+    x: array
         Points at which the spline family is evaluated.
+    backend: str
+        Name of the backend of :attr:`MSplineBasis.x` and the basis arrays.
     msplines : :class:`Msplines`
         An instance of :class:`Msplines` representing the spline family.
-    basis_vectors : np.ndarray
+    basis_vectors : array
         The member splines evaluated at the grid points, of shape
         ``(len(x), num_basis)``.
-    basis_derivatives : np.ndarray
+    basis_derivatives : array
         First derivatives of the member splines at the grid points, of shape
         ``(len(x), num_basis)``.
 
     .. _`Ramsay (1988)`: https://www.jstor.org/stable/2245395
     """
 
-    def __init__(self, order, num_basis, lower=None, upper=None, n_grid=None, grid=None):
-        """See main class docstring."""
-        self.order = _utils.validate_order(order)
-        self.num_basis = _utils.validate_num_basis(num_basis, self.order)
-        self.num_mesh_points = self.num_basis + 2 - self.order  # num_splines = num_mesh_points + 2 - order
-        self.lower, self.upper, self.x = _utils.build_grid(lower, upper, n_grid, grid)
-
-        self.mesh = np.linspace(self.lower, self.upper, self.num_mesh_points)
-        self.msplines = Msplines(order=self.order, mesh=self.mesh)
-        self.basis_vectors = np.array([self.msplines(self.x, i=i + 1) for i in range(self.num_basis)]).T
-        self.basis_derivatives = np.array(
-            [self.msplines.derivatives(self.x, i=i + 1) for i in range(self.num_basis)]
-        ).T
-
-    def __call__(self, weights, constant=0.0):
-        r"""Weighted sum of spline family .
-        Parameters
-        ----------
-        weights : array-like
-            Weights for each member of the spline family.
-        constant : float
-            Constant offset to be added to the Spline family.
-        Returns
-        -------
-        np.ndarray
-            :math:`M_{\rm{total}}` for each point in the grid.
-        """
-        weights = _utils.validate_weights(weights, self.num_basis, constant)
-        return constant + self.basis_vectors @ weights
-
-    def derivatives(self, weights, constant=0.0):
-        r"""Derivative of the weighted sum of the spline family.
-        Parameters
-        ----------
-        weights : array-like
-            Weights for each member of the spline family.
-        constant : float
-            Constant offset to be added to the derivative of the spline family.
-
-        Returns
-        -------
-        np.ndarray
-            Derivative of the weighted sum of the spline family evaluated
-            at each point in the grid (with an optional constant offset).
-        """
-        weights = _utils.validate_weights(weights, self.num_basis, constant)
-        return constant + self.basis_derivatives @ weights
+    def _make_family(self, mesh):
+        self.msplines = Msplines(order=self.order, mesh=mesh)
+        return self.msplines

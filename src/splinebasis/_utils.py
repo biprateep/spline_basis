@@ -97,23 +97,38 @@ def validate_num_basis(num_basis, order):
     return int(num_basis)
 
 
-def validate_x(x, lower, upper):
-    """Return `x` as a 1-D float array, raising `ValueError` if it lies outside `[lower, upper]`."""
-    x = np.asarray(x, dtype="float")
+def validate_member(i, n, invalid_i):
+    """True if `i` is a member `1 <= i <= n`; False if not and `invalid_i` is 'zero', else `ValueError`."""
+    if invalid_i not in ("raise", "zero"):
+        raise ValueError(f"invalid `invalid_i` of {invalid_i}")
+    if _is_int(i) and 1 <= i <= n:
+        return True
+    if invalid_i == "raise":
+        raise ValueError(f"invalid spline member `i` of {i}")
+    return False
+
+
+def validate_x(be, x, lower, upper):
+    """Return `x` as a 1-D float array of backend `be`, raising `ValueError` if it lies outside `[lower, upper]`.
+
+    The range check is skipped while JAX traces a function (`jax.jit`, `jax.grad`), where values are unknown.
+    """
+    x = be.as_float_array(x)
     if x.ndim != 1:
         raise ValueError("`x` is not array-like of dimension 1")
-    if (x < lower).any() or (x > upper).any():
+    if be.is_concrete(x) and bool(((x < lower) | (x > upper)).any()):
         raise ValueError(f"`x` outside {lower} and {upper}: {x}")
     return x
 
 
 def validate_weights(weights, num_basis, constant):
-    """Return `weights` as a 1-D float array of length `num_basis`, also checking `constant`."""
-    weights = np.asarray(weights, dtype="float")
-    if weights.ndim != 1:
+    """Check that `weights` is a 1-D array of length `num_basis` and `constant` a real scalar.
+
+    `weights` may belong to any backend, and `constant` may be a 0-dimensional array of any backend.
+    """
+    if getattr(weights, "ndim", None) != 1:
         raise ValueError("`weights` is not array-like of dimension 1")
-    if len(weights) != num_basis:
+    if weights.shape[0] != num_basis:
         raise ValueError(f"`weights` not length {num_basis}: {weights}")
-    if not _is_real(constant):
+    if not (_is_real(constant) or getattr(constant, "ndim", None) == 0):
         raise ValueError(f"`constant` not int or float: {constant}")
-    return weights
