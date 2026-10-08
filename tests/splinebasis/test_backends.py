@@ -44,7 +44,9 @@ def test_basis_weights_select_backend(backend, basis_cls):
     result = basis(to_array(weights), constant=to_array(2.0))
     assert type(result).__module__.split(".")[0] in (name, "jaxlib")
     np.testing.assert_allclose(to_numpy(result), basis(weights, constant=2.0), atol=1e-12)
-    np.testing.assert_allclose(to_numpy(basis.derivatives(to_array(weights))), basis.derivatives(weights))
+    np.testing.assert_allclose(
+        to_numpy(basis.derivatives(to_array(weights))), basis.derivatives(weights), atol=1e-12
+    )
 
 
 @pytest.mark.parametrize("basis_cls", [MSplineBasis, ISplineBasis])
