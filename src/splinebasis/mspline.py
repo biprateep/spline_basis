@@ -1,6 +1,10 @@
 import numba as nb
 import numpy as np
 
+from . import _utils
+
+__all__ = ["Msplines", "MSplineBasis"]
+
 
 class Msplines:
     r"""Implements M-splines (see `Ramsay (1988)`_).
@@ -48,41 +52,9 @@ class Msplines:
         mesh: np.ndarray = None,
     ):
         """See main class docstring."""
-        if not (isinstance(order, int) and order >= 1):
-            raise ValueError(f"`order` not int >= 1: {order}")
-        self.order = order
-
-        if mesh is None:
-            if lower is None or upper is None or num_knots is None:
-                raise ValueError(
-                    "if `mesh` is None, then `lower`, `upper`, and " "`num_knots` must be specified"
-                )
-            if not (isinstance(lower, (int, float)) and isinstance(upper, (int, float))):
-                raise ValueError(f"`lower` and `upper` not int or float: {lower}, {upper}")
-            if not (isinstance(num_knots, int) and num_knots >= 2 * self.order):
-                raise ValueError(f"`num_knots` not int >= {2*self.order}: {num_knots}")
-            self.lower = lower
-            self.upper = upper
-            self.mesh = np.linspace(self.lower, self.upper, num_knots - 2 * self.order + 2)
-
-        if mesh is not None:
-            self.mesh = np.array(mesh, dtype="float")
-            if self.mesh.ndim != 1:
-                raise ValueError(f"`mesh` not array-like of dimension 1: {mesh}")
-            if len(self.mesh) < 2:
-                raise ValueError(f"`mesh` not length >= 2: {mesh}")
-            if not np.array_equal(self.mesh, np.unique(self.mesh)):
-                raise ValueError(f"`mesh` elements not unique and sorted: {mesh}")
-            self.lower = self.mesh[0]
-            self.upper = self.mesh[-1]
-
-        assert self.lower < self.upper
-
-        self.knots = np.array(
-            [self.lower] * self.order + list(self.mesh[1:-1]) + [self.upper] * self.order,
-            dtype="float",
-        )
-
+        self.order = _utils.validate_order(order)
+        self.lower, self.upper, self.mesh = _utils.build_mesh(self.order, lower, upper, num_knots, mesh)
+        self.knots = _utils.build_knots(self.order, self.mesh)
         self.n = len(self.knots) - self.order
         assert self.n == len(self.mesh) - 2 + self.order
 
@@ -90,7 +62,7 @@ class Msplines:
         r"""Evaluate spline :math:`M_i` at point(s) x.
         Parameters
         ----------
-        x : np.ndarray
+        x : 1-D array-like
             Points at which to evaluate the spline.
         i : int
             Spline member :math:`M_i`, where :math:`1 \le i \le`
@@ -103,10 +75,7 @@ class Msplines:
             The values of the M-spline evaluated at each x.
 
         """
-        if not (isinstance(x, np.ndarray) and x.ndim == 1):
-            raise ValueError("`x` is not np.ndarray of dimension 1")
-        if (x < self.lower).any() or (x > self.upper).any():
-            raise ValueError(f"`x` outside {self.lower} and {self.upper}: {x}")
+        x = _utils.validate_x(x, self.lower, self.upper)
 
         return _calculate_M(x=x, i=i, k=self.order, n=self.n, knots=self.knots, invalid_i=invalid_i)
 
@@ -114,7 +83,7 @@ class Msplines:
         r"""Evaluate first derivative of spline :math:`M_i` at point(s) x.
         Parameters
         ----------
-        x : np.ndarray
+        x : 1-D array-like
             Points at which to evaluate the spline.
         i : int
             Spline member :math:`M_i`, where :math:`1 \le i \le`
@@ -127,18 +96,14 @@ class Msplines:
             The values of the first derivative of M-spline evaluated at each x.
 
         """
-
-        if not (isinstance(x, np.ndarray) and x.ndim == 1):
-            raise ValueError("`x` is not np.ndarray of dimension 1")
-        if (x < self.lower).any() or (x > self.upper).any():
-            raise ValueError(f"`x` outside {self.lower} and {self.upper}: {x}")
+        x = _utils.validate_x(x, self.lower, self.upper)
 
         return _calculate_dM_dx(x=x, i=i, k=self.order, n=self.n, knots=self.knots, invalid_i=invalid_i)
 
 
 @nb.jit(nopython=True)
-def _ti_le_x_lt_tiplusk(x, ti, tiplusk):
-    r"""Indices where :math:`t_i \le x \le t_{i+k}`.
+def _ti_le_x_lt_tiplusk(x, ti, tiplusk, last):
+    r"""Indices where :math:`t_i \le x < t_{i+k}`.
     Parameters
     ----------
     x : np.ndarray
@@ -146,15 +111,19 @@ def _ti_le_x_lt_tiplusk(x, ti, tiplusk):
         :math:`t_i`
     tiplusk : float
         :math:`t_{i+k}`
+    last : float
+        Last knot. If :math:`t_{i+k}` is the last knot the interval is closed,
+        :math:`t_i \le x \le t_{i+k}`, so the splines do not vanish at the
+        upper end of the mesh.
     Returns
     -------
     np.ndarray
         Array of booleans of same length as `x` indicating
-        if :math:`t_i \le x \le t_{i+k}`.
+        if `x` is in the support interval.
     """
-    key = (ti, tiplusk)
-    val = (ti <= x) & (x < tiplusk)
-    return val
+    if tiplusk == last:
+        return (ti <= x) & (x <= tiplusk)
+    return (ti <= x) & (x < tiplusk)
 
 
 @nb.jit(nopython=True)
@@ -173,7 +142,7 @@ def _calculate_M(x, i, k, n, knots, invalid_i="raise"):
     if tiplusk == ti:
         return np.zeros_like(x)
 
-    boolindex = _ti_le_x_lt_tiplusk(x, ti, tiplusk)
+    boolindex = _ti_le_x_lt_tiplusk(x, ti, tiplusk, knots[-1])
     if k == 1:
         values = 1.0 / (tiplusk - ti)
         res = np.where(boolindex, values, np.zeros_like(values))
@@ -212,7 +181,7 @@ def _calculate_dM_dx(x, i, k, n, knots, invalid_i="raise"):
         return np.zeros_like(x)
     else:
         assert k > 1
-        boolindex = _ti_le_x_lt_tiplusk(x, ti, tiplusk)
+        boolindex = _ti_le_x_lt_tiplusk(x, ti, tiplusk, knots[-1])
         values = (
             k
             * (
@@ -238,67 +207,57 @@ class MSplineBasis:
     Parameters
     ----------
     order : int
-        Sets :attr:`Isplines_total.order`.
-    mesh : array-like
-        Sets :attr:`Isplines_total.mesh`.
-    x : np.ndarray
-        Sets :attr:`Isplines_total.x`.
+        Sets :attr:`MSplineBasis.order`.
+    num_basis: int
+        Sets :attr:`MSplineBasis.num_basis`.
+    lower: float
+        Sets :attr:`MSplineBasis.lower`.
+    upper: float
+        Sets :attr:`MSplineBasis.upper`.
+    n_grid: int
+        Number of evenly spaced points in :attr:`MSplineBasis.x`.
+    grid: 1-D array-like
+        Sets :attr:`MSplineBasis.x`.
     Attributes
     ----------
     order : int
-        See :attr:`Isplines.order`.
-    mesh : np.ndarray
-        See :attr:`Isplines.mesh`.
-    n : int
-        See :attr:`Isplines.n`.
-    lower : float
-        See :attr:`Isplines.lower`.
-    upper : float
-        See :attr:`Isplines.upper`.
+        Order of spline, :math:`k` in notation of `Ramsay (1988)`_.
+        Polynomials are of degree :math:`k - 1`.
+    num_basis: int
+        Number of members in spline family, denoted as :math:`n` in
+        `Ramsay (1988)`_. Related to number of points :math:`q` in the mesh
+        and the order :math:`k` by :math:`n = q - 2 + k`.
+    lower: float
+        Lower end of interval spanned by the splines (first point in mesh).
+    upper: float
+        Upper end of interval spanned by the splines (last point in mesh).
+    x: np.ndarray
+        Points at which the spline family is evaluated.
+    msplines : :class:`Msplines`
+        An instance of :class:`Msplines` representing the spline family.
+    basis_vectors : np.ndarray
+        The member splines evaluated at the grid points, of shape
+        ``(len(x), num_basis)``.
+    basis_derivatives : np.ndarray
+        First derivatives of the member splines at the grid points, of shape
+        ``(len(x), num_basis)``.
 
     .. _`Ramsay (1988)`: https://www.jstor.org/stable/2245395
     """
 
     def __init__(self, order, num_basis, lower=None, upper=None, n_grid=None, grid=None):
         """See main class docstring."""
-        if not (isinstance(order, int) and order >= 1):
-            raise ValueError(f"`order` not int >= 1: {order}")
-        self.order = order
-        if not (isinstance(num_basis, int) and num_basis >= self.order - 2):
-            raise ValueError(f"`num_basis` not int >= {self.order-2}: {order}")
-        self.num_basis = num_basis
-        self.num_mesh_points = num_basis + 2 - self.order  # num_splines = num_mesh_points + 2 - order
-
-        if grid is None:
-            if lower is None or upper is None or n_grid is None:
-                raise ValueError(
-                    "if `grid` is None, then `lower`, `upper`, and " "`n_grid` must be specified"
-                )
-            if not (isinstance(lower, (int, float)) and isinstance(upper, (int, float))):
-                raise ValueError(f"`lower` and `upper` not int or float: {lower}, {upper}")
-            if not (isinstance(n_grid, int) and n_grid >= 1):
-                raise ValueError(f"`n_grid` not int >= 1: {n_grid}")
-            self.lower = lower
-            self.upper = upper
-            self.x = np.linspace(self.lower, self.upper, n_grid)
-
-        if grid is not None:
-            self.grid = np.array(grid, dtype="float")
-            if self.grid.ndim != 1:
-                raise ValueError(f"`grid` not array-like of dimension 1: {grid}")
-            if len(self.grid) < 1:
-                raise ValueError(f"`grid` not length >= 1: {self.grid}")
-            if not np.array_equal(self.grid, np.unique(self.grid)):
-                raise ValueError(f"`grid` elements not unique and sorted: {self.grid}")
-            self.lower = self.grid[0]
-            self.upper = self.grid[-1]
-            self.x = self.grid
-
-        assert self.lower < self.upper
+        self.order = _utils.validate_order(order)
+        self.num_basis = _utils.validate_num_basis(num_basis, self.order)
+        self.num_mesh_points = self.num_basis + 2 - self.order  # num_splines = num_mesh_points + 2 - order
+        self.lower, self.upper, self.x = _utils.build_grid(lower, upper, n_grid, grid)
 
         self.mesh = np.linspace(self.lower, self.upper, self.num_mesh_points)
         self.msplines = Msplines(order=self.order, mesh=self.mesh)
-        self.basis_vectors = np.array([self.msplines(self.x, i=i + 1) for i in range(self.num_basis)])
+        self.basis_vectors = np.array([self.msplines(self.x, i=i + 1) for i in range(self.num_basis)]).T
+        self.basis_derivatives = np.array(
+            [self.msplines.derivatives(self.x, i=i + 1) for i in range(self.num_basis)]
+        ).T
 
     def __call__(self, weights, constant=0.0):
         r"""Weighted sum of spline family .
@@ -313,14 +272,8 @@ class MSplineBasis:
         np.ndarray
             :math:`M_{\rm{total}}` for each point in the grid.
         """
-        if not (isinstance(weights, np.ndarray) and weights.ndim == 1):
-            raise ValueError("`weights` is not np.ndarray of dimension 1")
-        if len(weights) != self.num_basis:
-            raise ValueError(f"`weights` not length {self.num_basis}: {weights}")
-
-        res = constant + np.sum(weights[:, None] * self.basis_vectors, axis=1)
-
-        return res
+        weights = _utils.validate_weights(weights, self.num_basis, constant)
+        return constant + self.basis_vectors @ weights
 
     def derivatives(self, weights, constant=0.0):
         r"""Derivative of the weighted sum of the spline family.
@@ -337,17 +290,5 @@ class MSplineBasis:
             Derivative of the weighted sum of the spline family evaluated
             at each point in the grid (with an optional constant offset).
         """
-        if not (isinstance(weights, np.ndarray) and weights.ndim == 1):
-            raise ValueError("`weights` is not np.ndarray of dimension 1")
-        if len(weights) != self.num_basis:
-            raise ValueError(f"`weights` not length {self.num_basis}: {weights}")
-        if not (isinstance(constant, (int, float))):
-            raise ValueError(f"`constant` not int or float: {constant}")
-
-        basis_derivatives = np.array(
-            [self.isplines.derivatives(self.x, i=i + 1) for i in range(self.num_basis)]
-        )
-
-        res = constant + np.sum(weights[:, None] * basis_derivatives, axis=1)
-
-        return res
+        weights = _utils.validate_weights(weights, self.num_basis, constant)
+        return constant + self.basis_derivatives @ weights

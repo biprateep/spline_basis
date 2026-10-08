@@ -15,10 +15,8 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-    "deprecated",
-    "ipykernel",
     "numpy",
-    "numba", # Support for Jupyter notebooks
+    "numba",
 ]
 
 # On a mac, install optional dependencies with `pip install '.[dev]'` (include the single quotes)
@@ -37,6 +35,7 @@ dev = [
     "nbconvert", # Needed for pre-commit check to clear output from Python notebooks
     "nbsphinx", # Used to integrate Python notebooks into Sphinx documentation
     "ipython", # Also used in building notebooks into Sphinx
+    "ipykernel", # Support for Jupyter notebooks
     "matplotlib", # Used in sample notebook intro_notebook.ipynb
     "numpy", # Used in sample notebook intro_notebook.ipynb
 ]
